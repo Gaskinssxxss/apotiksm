@@ -8,6 +8,59 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// func CreateTransaksi(c *gin.Context) {
+// 	var transaksi models.Transaksi
+
+// 	if err := c.ShouldBindJSON(&transaksi); err != nil {
+// 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input: " + err.Error()})
+// 		return
+// 	}
+
+// 	for _, detail := range transaksi.Obats {
+// 		if detail.Jumlah <= 0 {
+// 			c.JSON(http.StatusBadRequest, gin.H{"error": "Jumlah obat harus lebih dari 0"})
+// 			return
+// 		}
+// 	}
+
+// 	tx := config.DB.Begin()
+
+// 	if err := tx.Create(&transaksi).Error; err != nil {
+// 		tx.Rollback()
+// 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create transaksi: " + err.Error()})
+// 		return
+// 	}
+
+// 	for _, detail := range transaksi.Obats {
+// 		var stok models.Stok
+// 		if err := tx.Where("obat_id = ?", detail.ObatID).First(&stok).Error; err != nil {
+// 			tx.Rollback()
+// 			c.JSON(http.StatusNotFound, gin.H{"error": "Obat with ID not found"})
+// 			return
+// 		}
+
+// 		if stok.StokAkhir < detail.Jumlah {
+// 			tx.Rollback()
+// 			c.JSON(http.StatusBadRequest, gin.H{"error": "Stok tidak mencukupi untuk obat dengan ID " + fmt.Sprint(detail.ObatID)})
+// 			return
+// 		}
+
+// 		stok.StokAkhir -= detail.Jumlah
+// 		stok.JumlahStokTransaksi = detail.Jumlah
+// 		stok.TipeTransaksi = "KELUAR"
+
+// 		if err := tx.Save(&stok).Error; err != nil {
+// 			tx.Rollback()
+// 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update stok: " + err.Error()})
+// 			return
+// 		}
+// 	}
+
+// 	tx.Commit()
+
+// 	c.JSON(http.StatusCreated, gin.H{"message": "Transaksi berhasil dibuat", "data": transaksi})
+// }
+
 func CreateTransaksi(c *gin.Context) {
 	var transaksi models.Transaksi
 

@@ -1,0 +1,1178 @@
+// File: /home/kali/APOTEKKK/apotek-management/cmd/main.go
+package main
+
+import (
+	"apotek-management/config"
+	"apotek-management/routes"
+	"log"
+
+	"github.com/gin-contrib/cors"
+	"github.com/gin-gonic/gin"
+)
+
+func setupRouter() *gin.Engine {
+	router := gin.Default()
+
+	router.Use(cors.New(cors.Config{
+		AllowOrigins:     []string{"http://localhost:8080"},
+		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
+		AllowCredentials: true,
+	}))
+
+	router.Static("/uploads", "./uploads")
+
+	routes.SetupRoutes(router)
+
+	return router
+}
+
+func main() {
+	config.ConnectDB()
+	r := setupRouter()
+	if err := r.Run(":3000"); err != nil {
+		log.Fatalf("Failed to run server: %v", err)
+	}
+}
+
+// package main
+
+// import (
+// 	"apotek-management/config"
+// 	"apotek-management/routes"
+// 	"log"
+
+// 	"github.com/gin-gonic/gin"
+// )
+
+// func setupRouter() *gin.Engine {
+// 	router := gin.Default()
+// 	routes.SetupRoutes(router)
+
+// 	return router
+// }
+
+// func main() {
+// 	config.ConnectDB()
+// 	r := setupRouter()
+// 	if err := r.Run(":3000"); err != nil {
+// 		log.Fatalf("Failed to run server: %v", err)
+// 	}
+// }
+
+
+// File: /home/kali/APOTEKKK/apotek-management/config/database.go
+package config
+
+import (
+	"apotek-management/models"
+	"fmt"
+	"log"
+
+	"gorm.io/driver/mysql"
+	"gorm.io/gorm"
+)
+
+var DB *gorm.DB
+
+func ConnectDB() {
+	dsn := "root:password@tcp(127.0.0.1:3306)/apotek?charset=utf8mb4&parseTime=True&loc=Local"
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	if err != nil {
+		log.Fatal("Gagal koneksi ke database:", err)
+	}
+
+	fmt.Println("Database berhasil terkoneksi")
+
+	err = db.AutoMigrate(
+		&models.Stok{},
+		&models.TagObat{},
+		&models.TipeObat{},
+		&models.Obat{},
+		&models.Transaksi{},
+	)
+	if err != nil {
+		log.Fatal("err migrasi:", err)
+	}
+
+	DB = db
+}
+
+
+// File: /home/kali/APOTEKKK/apotek-management/controllers/obat_controller.go
+package controllers
+
+import (
+	"apotek-management/config"
+	"apotek-management/models"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"strconv"
+
+	"github.com/gin-gonic/gin"
+)
+
+func CreateObat(c *gin.Context) {
+	namaObat := c.PostForm("nama_obat")
+	dosisObat := c.PostForm("dosis_obat")
+	deskripsi := c.PostForm("deskripsi")
+	idTipeObat, err := strconv.Atoi(c.PostForm("id_tipe_obat"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid id_tipe_obat"})
+		return
+	}
+	hargaObat, err := strconv.ParseUint(c.PostForm("harga_obat"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid harga_obat"})
+		return
+	}
+
+	tagIDs := c.PostFormArray("tags[]")
+	var tags []models.TagObat
+	for _, tagID := range tagIDs {
+		var tag models.TagObat
+		if err := config.DB.First(&tag, tagID).Error; err == nil {
+			tags = append(tags, tag)
+		}
+	}
+
+	file, err := c.FormFile("gambar")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Gambar file is required"})
+		return
+	}
+	filePath := "uploads/obat/" + file.Filename
+	if err := c.SaveUploadedFile(file, filePath); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save image"})
+		return
+	}
+
+	obat := models.Obat{
+		NamaObat:   namaObat,
+		Dosis:      dosisObat,
+		Deskripsi:  deskripsi,
+		TipeObatID: uint(idTipeObat),
+		Harga:      hargaObat,
+		Gambar:     filePath,
+		Tags:       tags,
+	}
+	if err := config.DB.Create(&obat).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusCreated, obat)
+}
+
+func CreateBatchObat(c *gin.Context) {
+	form, err := c.MultipartForm()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid multipart form data"})
+		return
+	}
+
+	files := form.File["gambar"]
+	data := form.Value["data"]
+
+	if len(files) != len(data) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Mismatch between number of images and data"})
+		return
+	}
+
+	var obatList []models.Obat
+	for i, jsonData := range data {
+		var obat models.Obat
+		if err := json.Unmarshal([]byte(jsonData), &obat); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON in data"})
+			return
+		}
+
+		file := files[i]
+		filePath := "uploads/obat/" + file.Filename
+		if err := c.SaveUploadedFile(file, filePath); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save image: " + err.Error()})
+			return
+		}
+
+		obat.Gambar = filePath
+		obatList = append(obatList, obat)
+	}
+
+	if err := config.DB.Create(&obatList).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusCreated, obatList)
+}
+
+func GetAllObat(c *gin.Context) {
+	var obatList []models.Obat
+
+	if err := config.DB.Preload("TipeObat").Preload("Tags").Preload("Stok").Find(&obatList).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	for _, obat := range obatList {
+		log.Printf("Obat: %+v\n", obat)
+	}
+
+	c.JSON(http.StatusOK, obatList)
+}
+
+func GetObatByID(c *gin.Context) {
+	id := c.Param("id")
+	var obat models.Obat
+
+	if err := config.DB.
+		Preload("TipeObat").
+		Preload("Tags").Preload("Stok").
+		First(&obat, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Obat not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, obat)
+}
+
+func UpdateObat(c *gin.Context) {
+	id := c.Param("id")
+	var existingObat models.Obat
+
+	if err := config.DB.First(&existingObat, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Obat not found"})
+		return
+	}
+
+	var updatedObat struct {
+		KodeObat   string           `json:"kode_obat"`
+		NamaObat   string           `json:"nama_obat"`
+		Dosis      string           `json:"dosis_obat"`
+		Deskripsi  string           `json:"deskripsi"`
+		HargaObat  uint64           `json:"harga_obat"`
+		TipeObatID uint             `json:"id_tipe_obat"`
+		Tags       []models.TagObat `json:"tags"`
+	}
+
+	if err := c.ShouldBindJSON(&updatedObat); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input: " + err.Error()})
+		return
+	}
+
+	file, err := c.FormFile("gambar")
+	if err == nil {
+		if existingObat.Gambar != "" {
+			_ = os.Remove(existingObat.Gambar)
+		}
+
+		filePath := "uploads/obat/" + file.Filename
+		if err := c.SaveUploadedFile(file, filePath); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save image: " + err.Error()})
+			return
+		}
+
+		existingObat.Gambar = filePath
+	}
+
+	existingObat.KodeObat = updatedObat.KodeObat
+	existingObat.NamaObat = updatedObat.NamaObat
+	existingObat.Dosis = updatedObat.Dosis
+	existingObat.Deskripsi = updatedObat.Deskripsi
+	existingObat.Harga = updatedObat.HargaObat
+	existingObat.TipeObatID = updatedObat.TipeObatID
+
+	if err := config.DB.Save(&existingObat).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update Obat: " + err.Error()})
+		return
+	}
+
+	if len(updatedObat.Tags) > 0 {
+		var tagIDs []uint
+		for _, tag := range updatedObat.Tags {
+			tagIDs = append(tagIDs, tag.ID)
+		}
+
+		var tags []models.TagObat
+		if err := config.DB.Where("id_tag_obat IN ?", tagIDs).Find(&tags).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update tags: " + err.Error()})
+			return
+		}
+		if err := config.DB.Model(&existingObat).Association("Tags").Replace(&tags); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update tags association: " + err.Error()})
+			return
+		}
+	}
+
+	if err := config.DB.Preload("TipeObat").Preload("Tags").First(&existingObat, id).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load updated Obat: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, existingObat)
+}
+
+func UpdateBatchObat(c *gin.Context) {
+	form, err := c.MultipartForm()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid multipart form data"})
+		return
+	}
+
+	files := form.File["gambar"]
+	data := form.Value["data"]
+
+	if len(files) > 0 && len(files) != len(data) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Mismatch between number of images and data"})
+		return
+	}
+
+	var obatList []models.Obat
+	for i, jsonData := range data {
+		var obat models.Obat
+
+		if err := json.Unmarshal([]byte(jsonData), &obat); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON in data: " + err.Error()})
+			return
+		}
+
+		var existingObat models.Obat
+		if err := config.DB.First(&existingObat, obat.ID).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Obat not found with ID: " + fmt.Sprint(obat.ID)})
+			return
+		}
+
+		if len(files) > 0 {
+			file := files[i]
+
+			if existingObat.Gambar != "" {
+				_ = os.Remove(existingObat.Gambar)
+			}
+
+			filePath := "uploads/obat/" + file.Filename
+			if err := c.SaveUploadedFile(file, filePath); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save image for ID: " + fmt.Sprint(obat.ID)})
+				return
+			}
+
+			obat.Gambar = filePath
+		} else {
+			obat.Gambar = existingObat.Gambar
+		}
+
+		existingObat.KodeObat = obat.KodeObat
+		existingObat.NamaObat = obat.NamaObat
+		existingObat.Deskripsi = obat.Deskripsi
+		existingObat.Harga = obat.Harga
+		existingObat.TipeObatID = obat.TipeObatID
+
+		if err := config.DB.Save(&existingObat).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update Obat: " + fmt.Sprint(obat.ID)})
+			return
+		}
+
+		obatList = append(obatList, existingObat)
+	}
+
+	c.JSON(http.StatusOK, obatList)
+}
+
+func DeleteObat(c *gin.Context) {
+	id := c.Param("id")
+	var obat models.Obat
+
+	if err := config.DB.First(&obat, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Obat not found"})
+		return
+	}
+
+	if err := config.DB.Model(&obat).Association("Tags").Clear(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete related tags: " + err.Error()})
+		return
+	}
+
+	if err := config.DB.Where("obat_id = ?", obat.ID).Delete(&models.Stok{}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete related stock: " + err.Error()})
+		return
+	}
+
+	if err := config.DB.Delete(&obat).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete obat: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Obat and related data deleted successfully"})
+}
+
+func DeleteBatchObat(c *gin.Context) {
+	var ids []uint
+
+	if err := c.ShouldBindJSON(&ids); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid data"})
+		return
+	}
+
+	if err := config.DB.Delete(&models.Obat{}, ids).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Obat(s) deleted successfully"})
+}
+
+
+// File: /home/kali/APOTEKKK/apotek-management/controllers/stok_controller.go
+package controllers
+
+import (
+	"apotek-management/config"
+	"apotek-management/models"
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+)
+
+func CreateStok(c *gin.Context) {
+	var stok models.Stok
+	if err := c.ShouldBindJSON(&stok); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := config.DB.Create(&stok).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	var stokWithRelations models.Stok
+	if err := config.DB.First(&stokWithRelations, stok.ID).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load relations: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusCreated, stokWithRelations)
+}
+
+func GetAllStok(c *gin.Context) {
+	var stokList []models.Stok
+	if err := config.DB.Find(&stokList).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, stokList)
+}
+
+func GetStokByID(c *gin.Context) {
+	id := c.Param("id")
+	var stok models.Stok
+	if err := config.DB.First(&stok, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Stok not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, stok)
+}
+
+func UpdateStok(c *gin.Context) {
+	id := c.Param("id")
+	var stok models.Stok
+	if err := config.DB.First(&stok, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Stok not found"})
+		return
+	}
+
+	if err := c.ShouldBindJSON(&stok); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := config.DB.Save(&stok).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, stok)
+}
+
+func DeleteStok(c *gin.Context) {
+	id := c.Param("id")
+	var stok models.Stok
+	if err := config.DB.First(&stok, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Stok not found"})
+		return
+	}
+
+	if err := config.DB.Delete(&stok).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Stok deleted successfully"})
+}
+
+
+// File: /home/kali/APOTEKKK/apotek-management/controllers/tag_obat_controller.go
+package controllers
+
+import (
+	"apotek-management/config"
+	"apotek-management/models"
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+)
+
+func GetAllTagObat(c *gin.Context) {
+	var tagObats []models.TagObat
+	if err := config.DB.Find(&tagObats).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to fetch tag obat"})
+		return
+	}
+	c.JSON(http.StatusOK, tagObats)
+}
+
+func GetTagObatByID(c *gin.Context) {
+	id := c.Param("id")
+	var tagObat models.TagObat
+	if err := config.DB.First(&tagObat, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Tag obat not found"})
+		return
+	}
+	c.JSON(http.StatusOK, tagObat)
+}
+
+func CreateTagObat(c *gin.Context) {
+	var tagObat models.TagObat
+	if err := c.ShouldBindJSON(&tagObat); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid data"})
+		return
+	}
+
+	if err := config.DB.Create(&tagObat).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to create tag obat"})
+		return
+	}
+
+	c.JSON(http.StatusOK, tagObat)
+}
+
+func UpdateTagObat(c *gin.Context) {
+	id := c.Param("id")
+	var tagObat models.TagObat
+	if err := config.DB.First(&tagObat, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Tag obat not found"})
+		return
+	}
+
+	if err := c.ShouldBindJSON(&tagObat); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid data"})
+		return
+	}
+
+	if err := config.DB.Save(&tagObat).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to update tag obat"})
+		return
+	}
+
+	c.JSON(http.StatusOK, tagObat)
+}
+
+func DeleteTagObat(c *gin.Context) {
+	id := c.Param("id")
+	var tagObat models.TagObat
+	if err := config.DB.First(&tagObat, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Tag obat not found"})
+		return
+	}
+
+	if err := config.DB.Delete(&tagObat).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to delete tag obat"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Tag obat deleted successfully"})
+}
+
+func CreateBatchTagObat(c *gin.Context) {
+	var tagObats []models.TagObat
+	if err := c.ShouldBindJSON(&tagObats); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid data"})
+		return
+	}
+
+	if err := config.DB.Create(&tagObats).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to create tag obat"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Batch create successful", "data": tagObats})
+}
+
+func UpdateBatchTagObat(c *gin.Context) {
+	var tagObats []models.TagObat
+	if err := c.ShouldBindJSON(&tagObats); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid data"})
+		return
+	}
+
+	for _, tagObat := range tagObats {
+		if err := config.DB.Save(&tagObat).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to update tag obat"})
+			return
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Batch update successful", "data": tagObats})
+}
+
+func DeleteBatchTagObat(c *gin.Context) {
+	var ids []uint
+	if err := c.ShouldBindJSON(&ids); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid data"})
+		return
+	}
+
+	if err := config.DB.Delete(&models.TagObat{}, ids).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to delete tag obat"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Batch delete successful"})
+}
+
+
+// File: /home/kali/APOTEKKK/apotek-management/controllers/tipe_obat_controller.go
+package controllers
+
+import (
+	"apotek-management/config"
+	"apotek-management/models"
+	"net/http"
+	"strconv"
+
+	"github.com/gin-gonic/gin"
+)
+
+func GetAllTipeObat(c *gin.Context) {
+	var tipeObats []models.TipeObat
+	if err := config.DB.Find(&tipeObats).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "Error fetching tipe obat"})
+		return
+	}
+	c.JSON(http.StatusOK, tipeObats)
+}
+
+func GetTipeObatByID(c *gin.Context) {
+	id, _ := strconv.Atoi(c.Param("id"))
+	var tipeObat models.TipeObat
+	if err := config.DB.First(&tipeObat, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"message": "Tipe obat not found"})
+		return
+	}
+	c.JSON(http.StatusOK, tipeObat)
+}
+
+func CreateTipeObat(c *gin.Context) {
+	var tipeObat models.TipeObat
+
+	if err := c.ShouldBindJSON(&tipeObat); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input: " + err.Error()})
+		return
+	}
+
+	if tipeObat.NamaTipe == "" || tipeObat.KodeTipe == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "NamaTipe and KodeTipe are required fields"})
+		return
+	}
+
+	if err := config.DB.Create(&tipeObat).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create Tipe Obat: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"message": "Tipe Obat created successfully",
+		"data":    tipeObat,
+	})
+}
+
+func UpdateTipeObat(c *gin.Context) {
+	id, _ := strconv.Atoi(c.Param("id"))
+	var tipeObat models.TipeObat
+	if err := config.DB.First(&tipeObat, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"message": "Tipe obat not found"})
+		return
+	}
+
+	if err := c.ShouldBindJSON(&tipeObat); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid input"})
+		return
+	}
+
+	if err := config.DB.Save(&tipeObat).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "Error updating tipe obat"})
+		return
+	}
+
+	c.JSON(http.StatusOK, tipeObat)
+}
+
+func DeleteTipeObat(c *gin.Context) {
+	id, _ := strconv.Atoi(c.Param("id"))
+	var tipeObat models.TipeObat
+	if err := config.DB.First(&tipeObat, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"message": "Tipe obat not found"})
+		return
+	}
+
+	if err := config.DB.Delete(&tipeObat).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "Error deleting tipe obat"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Tipe obat deleted successfully"})
+}
+
+func CreateBatchTipeObat(c *gin.Context) {
+	var tipeObats []models.TipeObat
+	if err := c.ShouldBindJSON(&tipeObats); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := config.DB.Create(&tipeObats).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusCreated, tipeObats)
+}
+
+func UpdateBatchTipeObat(c *gin.Context) {
+	var tipeObats []models.TipeObat
+	if err := c.ShouldBindJSON(&tipeObats); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	for _, tipeObat := range tipeObats {
+		if err := config.DB.Save(&tipeObat).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
+
+	c.JSON(http.StatusOK, tipeObats)
+}
+
+func DeleteBatchTipeObat(c *gin.Context) {
+	var tipeObatIDs []uint
+	if err := c.ShouldBindJSON(&tipeObatIDs); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := config.DB.Where("id IN ?", tipeObatIDs).Delete(&models.TipeObat{}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Tipe obat deleted successfully"})
+}
+
+
+// File: /home/kali/APOTEKKK/apotek-management/controllers/transaksi_controller.go
+package controllers
+
+import (
+	"apotek-management/config"
+	"apotek-management/models"
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+)
+
+func CreateTransaksi(c *gin.Context) {
+	var transaksi models.Transaksi
+
+	if err := c.ShouldBindJSON(&transaksi); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input: " + err.Error()})
+		return
+	}
+
+	for _, detail := range transaksi.Obats {
+		if detail.Jumlah <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Jumlah obat harus lebih dari 0"})
+			return
+		}
+	}
+
+	if err := config.DB.Create(&transaksi).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create transaksi: " + err.Error()})
+		return
+	}
+
+	var createdTransaksi models.Transaksi
+	if err := config.DB.
+		Preload("Obats.Obat").
+		Preload("Obats.Obat.TipeObat").
+		Preload("Obats.Obat.Tags").
+		Preload("Obats.Obat.Stok").
+		First(&createdTransaksi, transaksi.ID).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load transaksi with relations: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusCreated, createdTransaksi)
+}
+
+func GetAllTransaksi(c *gin.Context) {
+	var transaksiList []models.Transaksi
+
+	if err := config.DB.
+		Preload("Obats.Obat.Tags").
+		Preload("Obats.Obat.TipeObat").Preload("Obats.Obat.Stok").
+		Find(&transaksiList).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, transaksiList)
+}
+
+func GetTransaksiByID(c *gin.Context) {
+	id := c.Param("id")
+	var transaksi models.Transaksi
+	if err := config.DB.Preload("Obats.Obat.Tags").Preload("Obats.Obat.TipeObat").First(&transaksi, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Transaksi not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, transaksi)
+}
+
+func UpdateTransaksi(c *gin.Context) {
+	id := c.Param("id")
+	var transaksi models.Transaksi
+
+	if err := config.DB.First(&transaksi, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Transaksi not found"})
+		return
+	}
+
+	if err := c.ShouldBindJSON(&transaksi); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := config.DB.Save(&transaksi).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update transaksi: " + err.Error()})
+		return
+	}
+
+	if err := config.DB.
+		Preload("Obat").
+		Preload("Obat.TipeObat").
+		Preload("Obat.TagObat").
+		First(&transaksi, id).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load updated transaksi: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, transaksi)
+}
+
+func DeleteTransaksi(c *gin.Context) {
+	id := c.Param("id")
+	var transaksi models.Transaksi
+	if err := config.DB.First(&transaksi, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Transaksi not found"})
+		return
+	}
+
+	if err := config.DB.Preload("Obat").
+		Preload("Obat.TipeObat").
+		Preload("Obat.TagObat").Delete(&transaksi).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Transaksi deleted successfully"})
+}
+
+func CreateBatchTransaksi(c *gin.Context) {
+	var transaksiList []models.Transaksi
+	if err := c.ShouldBindJSON(&transaksiList); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid data"})
+		return
+	}
+
+	if err := config.DB.Create(&transaksiList).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to create transactions"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Batch transactions created successfully",
+		"data":    transaksiList,
+	})
+}
+
+func UpdateBatchTransaksi(c *gin.Context) {
+	var transaksiList []models.Transaksi
+	if err := c.ShouldBindJSON(&transaksiList); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid data"})
+		return
+	}
+
+	for _, transaksi := range transaksiList {
+		if err := config.DB.Save(&transaksi).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to update some transactions"})
+			return
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Batch transactions updated successfully",
+		"data":    transaksiList,
+	})
+}
+
+func DeleteBatchTransaksi(c *gin.Context) {
+	var ids []uint
+	if err := c.ShouldBindJSON(&ids); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid data"})
+		return
+	}
+
+	if err := config.DB.Delete(&models.Transaksi{}, "id IN ?", ids).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to delete transactions"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Batch transactions deleted successfully",
+	})
+}
+
+
+// File: /home/kali/APOTEKKK/apotek-management/models/db.go
+package models
+
+import (
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+)
+
+var DB *gorm.DB
+
+func InitDB() {
+	var err error
+	DB, err = gorm.Open(sqlite.Open("test.db"), &gorm.Config{})
+	if err != nil {
+		panic("failed to connect to the database")
+	}
+}
+
+
+// File: /home/kali/APOTEKKK/apotek-management/models/obat.go
+package models
+
+import "time"
+
+type Obat struct {
+	ID         uint      `json:"id_obat" gorm:"primaryKey;column:id_obat"`
+	KodeObat   string    `json:"kode_obat" gorm:"type:varchar(100);not null"`
+	NamaObat   string    `json:"nama_obat" gorm:"type:varchar(100);not null"`
+	Dosis      string    `json:"dosis_obat" gorm:"column:dosis_obat;type:varchar(255);not null"`
+	Gambar     string    `json:"gambar_obat" gorm:"column:gambar_obat;type:varchar(255);not null"`
+	Deskripsi  string    `json:"deskripsi" gorm:"type:text"`
+	Harga      uint64    `json:"harga_obat" gorm:"type:bigint unsigned;not null"`
+	TipeObatID uint      `json:"id_tipe_obat" gorm:"not null"`
+	TipeObat   TipeObat  `json:"tipe_obat" gorm:"foreignKey:TipeObatID;references:ID"`
+	Tags       []TagObat `json:"tags" gorm:"many2many:obat_tags;joinForeignKey:ObatID;joinReferences:TagObatID"`
+	Stok       Stok      `json:"stok" gorm:"foreignKey:ObatID"`
+	CreatedAt  time.Time `json:"created_at" gorm:"type:timestamp;default:CURRENT_TIMESTAMP"`
+	UpdatedAt  time.Time `json:"updated_at" gorm:"type:timestamp;default:CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"`
+}
+
+type ObatTag struct {
+	ObatID    uint      `json:"obat_id" gorm:"primaryKey"`
+	TagObatID uint      `json:"tag_obat_id" gorm:"primaryKey"`
+	CreatedAt time.Time `json:"created_at" gorm:"type:timestamp;default:CURRENT_TIMESTAMP"`
+}
+
+
+// File: /home/kali/APOTEKKK/apotek-management/models/stok.go
+package models
+
+import "time"
+
+type Stok struct {
+	ID                  uint      `json:"id" gorm:"primaryKey"`
+	StokAwal            int       `json:"stok_awal"`
+	StokAkhir           int       `json:"stok_akhir"`
+	JumlahStokTransaksi int       `json:"jumlah_stok_transaksi"`
+	TipeTransaksi       string    `json:"tipe_transaksi" gorm:"type:enum('MASUK', 'KELUAR');not null"`
+	Keterangan          string    `json:"keterangan" gorm:"type:text"`
+	ObatID              uint      `json:"obat_id" gorm:"not null"`
+	CreatedAt           time.Time `json:"created_at" gorm:"type:timestamp;default:CURRENT_TIMESTAMP"`
+	UpdatedAt           time.Time `json:"updated_at" gorm:"type:timestamp;default:CURRENT_TIMESTAMP;autoUpdateTime"`
+}
+
+
+// File: /home/kali/APOTEKKK/apotek-management/models/tag_obat.go
+package models
+
+import "time"
+
+type TagObat struct {
+	ID        uint      `json:"id_tag_obat" gorm:"primaryKey;column:id_tag_obat"`
+	NamaTag   string    `json:"nama_tag" gorm:"type:varchar(100);not null"`
+	CreatedAt time.Time `json:"created_at" gorm:"type:timestamp;default:CURRENT_TIMESTAMP"`
+	UpdatedAt time.Time `json:"updated_at" gorm:"type:timestamp;default:CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"`
+}
+
+func (TagObat) TableName() string {
+	return "tag_obat"
+}
+
+
+// File: /home/kali/APOTEKKK/apotek-management/models/tipe_obat.go
+package models
+
+import "time"
+
+type TipeObat struct {
+	ID        uint      `json:"id_tipe_obat" gorm:"primaryKey;column:id_tipe_obat;type:bigint unsigned"`
+	NamaTipe  string    `json:"nama_tipe" gorm:"type:varchar(100);not null"`
+	KodeTipe  string    `json:"kode_tipe" gorm:"type:varchar(100);not null"`
+	CreatedAt time.Time `json:"created_at" gorm:"type:timestamp;default:CURRENT_TIMESTAMP"`
+	UpdatedAt time.Time `json:"updated_at" gorm:"type:timestamp;default:CURRENT_TIMESTAMP;autoUpdateTime"`
+}
+
+func (TipeObat) TableName() string {
+	return "tipe_obats"
+}
+
+
+// File: /home/kali/APOTEKKK/apotek-management/models/transaksi.go
+package models
+
+import (
+	"time"
+)
+
+type Transaksi struct {
+	ID            uint              `json:"id_transaksi" gorm:"primaryKey"`
+	KodeTransaksi string            `json:"kode_transaksi" gorm:"type:varchar(20);unique;not null"`
+	TotalHarga    int               `json:"total_harga" gorm:"type:int;not null"`
+	Status        string            `json:"status" gorm:"type:varchar(50);not null"`
+	ObatID        uint              `json:"id_obat" gorm:"not null"`
+	Obats         []TransaksiDetail `json:"obats" gorm:"foreignKey:TransaksiID"`
+	CreatedAt     time.Time         `json:"created_at" gorm:"type:timestamp;default:CURRENT_TIMESTAMP"`
+}
+
+type TransaksiDetail struct {
+	ID          uint      `json:"id" gorm:"primaryKey"`
+	TransaksiID uint      `json:"id_transaksi" gorm:"not null"`
+	ObatID      uint      `json:"id_obat" gorm:"not null"`
+	Jumlah      int       `json:"jumlah" gorm:"type:int;not null"`
+	Obat        Obat      `json:"obat" gorm:"foreignKey:ObatID;references:ID"`
+	CreatedAt   time.Time `json:"created_at" gorm:"type:timestamp;default:CURRENT_TIMESTAMP"`
+}
+
+
+// File: /home/kali/APOTEKKK/apotek-management/models/validator.go
+package models
+
+import (
+	"github.com/go-playground/validator/v10"
+)
+
+var validate *validator.Validate
+
+func init() {
+	validate = validator.New()
+}
+
+func ValidateStruct(s interface{}) error {
+	return validate.Struct(s)
+}
+
+
+// File: /home/kali/APOTEKKK/apotek-management/routes/routes.go
+package routes
+
+import (
+	"apotek-management/controllers"
+
+	"github.com/gin-gonic/gin"
+)
+
+func SetupRoutes(router *gin.Engine) {
+	router.Use(gin.Logger())
+	router.Use(gin.Recovery())
+
+	api := router.Group("/api")
+	{
+		// Tag Obat
+		api.GET("/tag_obat", controllers.GetAllTagObat)
+		api.GET("/tag_obat/:id", controllers.GetTagObatByID)
+		api.POST("/tag_obat", controllers.CreateTagObat)
+		api.PUT("/tag_obat/:id", controllers.UpdateTagObat)
+		api.DELETE("/tag_obat/:id", controllers.DeleteTagObat)
+
+		// Tipe Obat
+		api.GET("/tipe_obat", controllers.GetAllTipeObat)
+		api.GET("/tipe_obat/:id", controllers.GetTipeObatByID)
+		api.POST("/tipe_obat", controllers.CreateTipeObat)
+		api.PUT("/tipe_obat/:id", controllers.UpdateTipeObat)
+		api.DELETE("/tipe_obat/:id", controllers.DeleteTipeObat)
+
+		api.POST("/tipe_obat/batch_create", controllers.CreateBatchTipeObat)
+		api.PUT("/tipe_obat/batch_update", controllers.UpdateBatchTipeObat)
+		api.DELETE("/tipe_obat/batch_delete", controllers.DeleteBatchTipeObat)
+
+		// Stok
+		api.GET("/stok", controllers.GetAllStok)
+		api.GET("stok/:id", controllers.GetStokByID)
+		api.POST("/stok", controllers.CreateStok)
+		api.PUT("/stok/:id", controllers.UpdateStok)
+		api.DELETE("/stok/:id", controllers.DeleteStok)
+
+		// Transaksi
+		api.POST("/transaksi", controllers.CreateTransaksi)
+		api.GET("/transaksi", controllers.GetAllTransaksi)
+		api.GET("/transaksi/:id", controllers.GetTransaksiByID)
+		api.PUT("/transaksi/:id", controllers.UpdateTransaksi)
+		api.DELETE("/transaksi/:id", controllers.DeleteTransaksi)
+
+		api.POST("/transaksi/batch_create", controllers.CreateBatchTransaksi)
+		api.PUT("/transaksi/batch_update", controllers.UpdateBatchTransaksi)
+		api.DELETE("/transaksi/batch_delete", controllers.DeleteBatchTransaksi)
+
+		// Obat
+		api.GET("/obat", controllers.GetAllObat)
+		api.GET("/obat/:id", controllers.GetObatByID)
+		api.POST("/obat", controllers.CreateObat)
+		api.POST("/obat/batch_create", controllers.CreateBatchObat)
+		api.PUT("/obat/:id", controllers.UpdateObat)
+		api.PUT("/obat/batch_update", controllers.UpdateBatchObat)
+		api.DELETE("/obat/:id", controllers.DeleteObat)
+		api.DELETE("/obat/batch_delete", controllers.DeleteBatchObat)
+	}
+
+	// Welcome route
+	router.GET("/", func(c *gin.Context) {
+		c.JSON(200, gin.H{
+			"message": "Welcome to the Apotek Management API!",
+		})
+	})
+}
+
+

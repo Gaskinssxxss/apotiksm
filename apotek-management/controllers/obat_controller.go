@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -17,6 +18,7 @@ func CreateObat(c *gin.Context) {
 	namaObat := c.PostForm("nama_obat")
 	dosisObat := c.PostForm("dosis_obat")
 	deskripsi := c.PostForm("deskripsi")
+	kodeObat := c.PostForm("kode_obat")
 	idTipeObat, err := strconv.Atoi(c.PostForm("id_tipe_obat"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid id_tipe_obat"})
@@ -56,16 +58,19 @@ func CreateObat(c *gin.Context) {
 		Harga:      hargaObat,
 		Gambar:     filePath,
 		Tags:       tags,
+		KodeObat:   kodeObat,
 	}
+
 	if err := config.DB.Create(&obat).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusCreated, obat)
+	c.JSON(http.StatusCreated, gin.H{"obat": obat})
 }
 
 func CreateBatchObat(c *gin.Context) {
+
 	form, err := c.MultipartForm()
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid multipart form data"})
@@ -81,36 +86,80 @@ func CreateBatchObat(c *gin.Context) {
 	}
 
 	var obatList []models.Obat
+
 	for i, jsonData := range data {
-		var obat models.Obat
-		if err := json.Unmarshal([]byte(jsonData), &obat); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON in data"})
+		var input struct {
+			NamaObat  string   `json:"nama_obat"`
+			KodeObat  string   `json:"kode_obat"`
+			DosisObat string   `json:"dosis_obat"`
+			Deskripsi string   `json:"deskripsi"`
+			NamaTipe  string   `json:"nama_tipe"`
+			TagObat   []string `json:"tag_obat"`
+			HargaObat uint64   `json:"harga_obat"`
+		}
+
+		if err := json.Unmarshal([]byte(jsonData), &input); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON in data: " + err.Error()})
 			return
 		}
 
 		file := files[i]
-		filePath := "uploads/obat/" + file.Filename
+		fileName := fmt.Sprintf("%d-%s", time.Now().UnixNano(), file.Filename)
+		filePath := "uploads/obat/" + fileName
+
 		if err := c.SaveUploadedFile(file, filePath); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save image: " + err.Error()})
 			return
 		}
 
-		obat.Gambar = filePath
+		var tipeObat models.TipeObat
+		if err := config.DB.Where("nama_tipe = ?", input.NamaTipe).FirstOrCreate(&tipeObat, models.TipeObat{NamaTipe: input.NamaTipe}).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to find or create tipe obat: " + err.Error()})
+			return
+		}
+
+		var tagList []models.TagObat
+		for _, tagName := range input.TagObat {
+			var tag models.TagObat
+			if err := config.DB.Where("nama_tag = ?", tagName).FirstOrCreate(&tag, models.TagObat{NamaTag: tagName}).Error; err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to find or create tag: " + err.Error()})
+				return
+			}
+			tagList = append(tagList, tag)
+		}
+
+		obat := models.Obat{
+			KodeObat:   input.KodeObat,
+			NamaObat:   input.NamaObat,
+			Dosis:      input.DosisObat,
+			Deskripsi:  input.Deskripsi,
+			Harga:      input.HargaObat,
+			TipeObatID: tipeObat.ID,
+			Tags:       tagList,
+			Gambar:     filePath,
+		}
 		obatList = append(obatList, obat)
 	}
 
 	if err := config.DB.Create(&obatList).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save data to database: " + err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusCreated, obatList)
+	c.JSON(http.StatusCreated, gin.H{
+		"message": "Batch obat created successfully",
+		"data":    obatList,
+	})
 }
 
 func GetAllObat(c *gin.Context) {
 	var obatList []models.Obat
 
-	if err := config.DB.Preload("TipeObat").Preload("Tags").Preload("Stok").Find(&obatList).Error; err != nil {
+	if err := config.DB.
+		Preload("TipeObat").
+		Preload("Tags").
+		Preload("Stok").
+		Find(&obatList).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

@@ -13,7 +13,7 @@ type Obat struct {
 	TipeObatID uint      `json:"id_tipe_obat" gorm:"not null"`
 	TipeObat   TipeObat  `json:"tipe_obat" gorm:"foreignKey:TipeObatID;references:ID"`
 	Tags       []TagObat `json:"tags" gorm:"many2many:obat_tags;joinForeignKey:ObatID;joinReferences:TagObatID"`
-	Stok       Stok      `json:"stok" gorm:"foreignKey:ObatID"`
+	Stok       []Stok    `json:"stok" gorm:"foreignKey:ObatID"` // Relasi one-to-many dengan Stok
 	CreatedAt  time.Time `json:"created_at" gorm:"type:timestamp;default:CURRENT_TIMESTAMP"`
 	UpdatedAt  time.Time `json:"updated_at" gorm:"type:timestamp;default:CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"`
 }
