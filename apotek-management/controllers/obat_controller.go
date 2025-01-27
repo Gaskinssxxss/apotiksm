@@ -5,7 +5,6 @@ import (
 	"apotek-management/models"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -29,7 +28,6 @@ func CreateObat(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid harga_obat"})
 		return
 	}
-
 	tagIDs := c.PostFormArray("tags[]")
 	var tags []models.TagObat
 	for _, tagID := range tagIDs {
@@ -38,7 +36,6 @@ func CreateObat(c *gin.Context) {
 			tags = append(tags, tag)
 		}
 	}
-
 	file, err := c.FormFile("gambar")
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Gambar file is required"})
@@ -49,7 +46,6 @@ func CreateObat(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save image"})
 		return
 	}
-
 	obat := models.Obat{
 		NamaObat:   namaObat,
 		Dosis:      dosisObat,
@@ -60,23 +56,19 @@ func CreateObat(c *gin.Context) {
 		Tags:       tags,
 		KodeObat:   kodeObat,
 	}
-
 	if err := config.DB.Create(&obat).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-
 	c.JSON(http.StatusCreated, gin.H{"obat": obat})
 }
 
 func CreateBatchObat(c *gin.Context) {
-
 	form, err := c.MultipartForm()
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid multipart form data"})
 		return
 	}
-
 	files := form.File["gambar"]
 	data := form.Value["data"]
 
@@ -84,9 +76,7 @@ func CreateBatchObat(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Mismatch between number of images and data"})
 		return
 	}
-
 	var obatList []models.Obat
-
 	for i, jsonData := range data {
 		var input struct {
 			NamaObat  string   `json:"nama_obat"`
@@ -111,13 +101,11 @@ func CreateBatchObat(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save image: " + err.Error()})
 			return
 		}
-
 		var tipeObat models.TipeObat
 		if err := config.DB.Where("nama_tipe = ?", input.NamaTipe).FirstOrCreate(&tipeObat, models.TipeObat{NamaTipe: input.NamaTipe}).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to find or create tipe obat: " + err.Error()})
 			return
 		}
-
 		var tagList []models.TagObat
 		for _, tagName := range input.TagObat {
 			var tag models.TagObat
@@ -154,7 +142,6 @@ func CreateBatchObat(c *gin.Context) {
 
 func GetAllObat(c *gin.Context) {
 	var obatList []models.Obat
-
 	if err := config.DB.
 		Preload("TipeObat").
 		Preload("Tags").
@@ -163,14 +150,11 @@ func GetAllObat(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-
-	for _, obat := range obatList {
-		log.Printf("Obat: %+v\n", obat)
-	}
-
+	// for _, obat := range obatList {
+	// 	// log.Printf("Obat: %+v\n", obat)
+	// }
 	c.JSON(http.StatusOK, obatList)
 }
-
 func GetObatByID(c *gin.Context) {
 	id := c.Param("id")
 	var obat models.Obat

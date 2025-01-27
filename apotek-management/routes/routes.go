@@ -53,10 +53,16 @@ func SetupRoutes(router *gin.Engine) {
 		api.GET("/obat/:id", controllers.GetObatByID)
 		api.POST("/obat", controllers.CreateObat)
 		api.POST("/obat/batch_create", controllers.CreateBatchObat)
+
 		api.PUT("/obat/:id", controllers.UpdateObat)
 		api.PUT("/obat/batch_update", controllers.UpdateBatchObat)
 		api.DELETE("/obat/:id", controllers.DeleteObat)
 		api.DELETE("/obat/batch_delete", controllers.DeleteBatchObat)
+
+		//laporan
+		api.GET("/laporan/laporan-transaksi", controllers.GetLaporanTransaksi)
+		api.GET("/laporan/laporan-stok", controllers.GetLaporanStok)
+		api.GET("/laporan/laporan-labarugi", controllers.GetLaporanLabaRugi)
 	}
 
 	// Welcome route

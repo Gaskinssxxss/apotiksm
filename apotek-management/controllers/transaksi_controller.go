@@ -3,9 +3,12 @@ package controllers
 import (
 	"apotek-management/config"
 	"apotek-management/models"
+	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // func CreateTransaksi(c *gin.Context) {
@@ -99,6 +102,7 @@ func GetAllTransaksi(c *gin.Context) {
 	var transaksiList []models.Transaksi
 
 	if err := config.DB.
+		Preload("Obats").
 		Preload("Obats.Obat.Tags").
 		Preload("Obats.Obat.TipeObat").Preload("Obats.Obat.Stok").
 		Find(&transaksiList).Error; err != nil {
@@ -121,34 +125,80 @@ func GetTransaksiByID(c *gin.Context) {
 }
 
 func UpdateTransaksi(c *gin.Context) {
-	id := c.Param("id")
-	var transaksi models.Transaksi
+	id := c.Param("id") // ID transaksi dari parameter URL
+	var transaksiBaru models.Transaksi
+	var transaksiLama models.Transaksi
 
-	if err := config.DB.First(&transaksi, id).Error; err != nil {
+	// Ambil data transaksi lama
+	if err := config.DB.Preload("Obats").First(&transaksiLama, id).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Transaksi not found"})
 		return
 	}
 
-	if err := c.ShouldBindJSON(&transaksi); err != nil {
+	// Bind data transaksi baru dari request
+	if err := c.ShouldBindJSON(&transaksiBaru); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	if err := config.DB.Save(&transaksi).Error; err != nil {
+	// Gunakan transaksi database untuk menjaga konsistensi
+	if err := config.DB.Transaction(func(tx *gorm.DB) error {
+		for _, detailBaru := range transaksiBaru.Obats {
+			// Ambil detail transaksi lama
+			var detailLama models.TransaksiDetail
+			if err := tx.Where("id = ?", detailBaru.ID).First(&detailLama).Error; err != nil {
+				return errors.New("Transaksi detail not found for id: " + fmt.Sprint(detailBaru.ID))
+			}
+
+			// Hitung selisih jumlah
+			selisihJumlah := detailBaru.Jumlah - detailLama.Jumlah
+
+			// Ambil stok terakhir untuk obat terkait
+			var stok models.Stok
+			if err := tx.Where("obat_id = ?", detailBaru.ObatID).Order("created_at desc").First(&stok).Error; err != nil {
+				return errors.New("stok not found for obat_id: " + fmt.Sprint(detailBaru.ObatID))
+			}
+
+			// Update stok berdasarkan selisih jumlah
+			if selisihJumlah > 0 {
+				// Jika jumlah bertambah, kurangi stok
+				if stok.StokAkhir < selisihJumlah {
+					return errors.New("stok tidak mencukupi untuk obat_id: " + fmt.Sprint(detailBaru.ObatID))
+				}
+				stok.StokAkhir -= selisihJumlah
+			} else if selisihJumlah < 0 {
+				// Jika jumlah berkurang, tambahkan stok
+				stok.StokAkhir += -selisihJumlah
+			}
+
+			// Update stok_awal dan jumlah_stok_transaksi
+			stok.StokAwal = stok.StokAkhir + selisihJumlah
+			stok.JumlahStokTransaksi = detailBaru.Jumlah
+
+			// Simpan perubahan stok
+			if err := tx.Save(&stok).Error; err != nil {
+				return err
+			}
+
+			// Perbarui detail transaksi
+			if err := tx.Model(&detailLama).Updates(detailBaru).Error; err != nil {
+				return err
+			}
+		}
+
+		// Perbarui transaksi utama
+		if err := tx.Model(&transaksiLama).Updates(transaksiBaru).Error; err != nil {
+			return err
+		}
+
+		return nil
+	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update transaksi: " + err.Error()})
 		return
 	}
 
-	if err := config.DB.
-		Preload("Obat").
-		Preload("Obat.TipeObat").
-		Preload("Obat.TagObat").
-		First(&transaksi, id).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load updated transaksi: " + err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, transaksi)
+	// Kembalikan respon sukses
+	c.JSON(http.StatusOK, transaksiBaru)
 }
 
 func DeleteTransaksi(c *gin.Context) {

@@ -26,6 +26,7 @@ func ConnectDB() {
 		&models.TipeObat{},
 		&models.Obat{},
 		&models.Transaksi{},
+		&models.TransaksiDetail{},
 	)
 	if err != nil {
 		log.Fatal("err migrasi:", err)
